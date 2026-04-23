@@ -1,0 +1,11 @@
+# UI Test Notes
+- Dashboard loads correctly with sidebar navigation
+- Create Project dialog works with name, description, color picker
+- Project detail page shows with process list
+- Create Process dialog works with "Create & Open Editor" button
+- Process editor loads at /editor/1/1 with:
+  - Toolbar: Add Node, Capture, Auto-format, Swimlane, Zoom, Undo/Redo, Save, Share, Export
+  - Start node auto-created and visible on canvas
+  - React Flow canvas with grid background
+  - Controls (zoom in/out, fit view) in bottom-left
+  - MiniMap in bottom-right

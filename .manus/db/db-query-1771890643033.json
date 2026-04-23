@@ -1,0 +1,25 @@
+{
+  "query": "SELECT id, name, projectId FROM processes;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2Vj5gFDXkD2FJ8p.ec6f671b9cb6 --database nxFiB7JwsBk7XdLnVje6dv --execute SELECT id, name, projectId FROM processes;",
+  "rows": [
+    {
+      "id": "1",
+      "name": "New Client Setup",
+      "projectId": "1"
+    },
+    {
+      "id": "2",
+      "name": "xyz",
+      "projectId": "2"
+    },
+    {
+      "id": "30001",
+      "name": "Test Empty Canvas",
+      "projectId": "1"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tname\tprojectId\n1\tNew Client Setup\t1\n2\txyz\t2\n30001\tTest Empty Canvas\t1\n",
+  "stderr": "",
+  "execution_time_ms": 49
+}
