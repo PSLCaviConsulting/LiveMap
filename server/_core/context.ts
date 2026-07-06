@@ -9,9 +9,12 @@ export type TrpcContext = {
   user: User | null;
 };
 
-// Dev-auth bypass: when DEV_AUTH=1 (or NODE_ENV=development with no OAuth
-// server configured) we auto-login as a single local user. No Manus OAuth
-// portal is needed. The dev user is granted admin.
+// Single-user auto-login. This app ships without a real OAuth provider, so
+// by default (no OAUTH_SERVER_URL configured) every request is authenticated
+// as one shared local admin user — locally AND on a deployed domain — so the
+// app is usable out of the box with no sign-in step. This means anyone who
+// can reach the URL is that user; configure OAUTH_SERVER_URL (real auth) to
+// turn it off, or set DEV_AUTH=0 to force it off explicitly.
 const DEV_OPEN_ID = "local-dev-user";
 const DEV_NAME = "Local Dev";
 const DEV_EMAIL = "dev@localhost";
@@ -33,10 +36,13 @@ async function getOrCreateDevUser() {
 }
 
 function isDevAuthEnabled() {
+  // Explicit override wins in both directions.
+  if (process.env.DEV_AUTH === "0" || process.env.DEV_AUTH === "false") return false;
   if (process.env.DEV_AUTH === "1" || process.env.DEV_AUTH === "true") return true;
-  // Fallback: in development with no OAuth configured, auto-enable dev auth.
-  if (process.env.NODE_ENV !== "production" && !process.env.OAUTH_SERVER_URL) return true;
-  return false;
+  // Otherwise auto-login whenever no real OAuth provider is configured — this
+  // is what makes a fresh deploy usable without any sign-in setup. Set
+  // OAUTH_SERVER_URL to switch to real authentication.
+  return !process.env.OAUTH_SERVER_URL;
 }
 
 export async function createContext(
