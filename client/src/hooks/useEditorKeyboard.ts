@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import type { Node } from "@xyflow/react";
+import type { Node, Edge } from "@xyflow/react";
 
 /**
  * Editor keyboard shortcuts.
@@ -8,16 +8,18 @@ import type { Node } from "@xyflow/react";
  */
 export function useEditorKeyboard(params: {
   nodes: Node[];
+  edges: Edge[];
   setNodes: (updater: (prev: Node[]) => Node[]) => void;
   onUndo: () => void;
   onRedo: () => void;
   onDuplicate: () => void;
   onClosePopups: () => void;
-  onDeleteSelected: (selected: Node[]) => void;
+  onSpawnNext?: (newType: "action" | "question") => void;
+  onDeleteSelected: (selectedNodes: Node[], selectedEdges: Edge[]) => void;
 }) {
   const {
-    nodes, setNodes,
-    onUndo, onRedo, onDuplicate, onClosePopups, onDeleteSelected,
+    nodes, edges, setNodes,
+    onUndo, onRedo, onDuplicate, onClosePopups, onSpawnNext, onDeleteSelected,
   } = params;
 
   useEffect(() => {
@@ -49,13 +51,25 @@ export function useEditorKeyboard(params: {
         onClosePopups();
         return;
       }
-      if (e.key === "Delete" || e.key === "Backspace") {
+      // Tab / Shift+Tab: spawn a connected next node from the single
+      // selected node (Action / Question) — the interview-speed chain.
+      if (e.key === "Tab" && onSpawnNext) {
         const selected = nodes.filter(n => n.selected);
-        if (selected.length === 0) return;
-        onDeleteSelected(selected);
+        if (selected.length === 1) {
+          e.preventDefault();
+          onSpawnNext(e.shiftKey ? "question" : "action");
+        }
+        return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        const selectedNodes = nodes.filter(n => n.selected);
+        const selectedEdges = edges.filter(ed => ed.selected);
+        if (selectedNodes.length === 0 && selectedEdges.length === 0) return;
+        e.preventDefault();
+        onDeleteSelected(selectedNodes, selectedEdges);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [nodes, setNodes, onUndo, onRedo, onDuplicate, onClosePopups, onDeleteSelected]);
+  }, [nodes, edges, setNodes, onUndo, onRedo, onDuplicate, onClosePopups, onSpawnNext, onDeleteSelected]);
 }

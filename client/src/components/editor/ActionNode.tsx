@@ -16,6 +16,8 @@ function ActionNode({ id, data, selected }: NodeProps) {
     suggestions?: { systems: string[]; actions: string[]; roles: string[] };
     note?: string;
     readOnly?: boolean;
+    autoFocus?: boolean;
+    onAutoFocused?: () => void;
   };
   const readOnly = !!nodeData.readOnly;
 
@@ -25,19 +27,27 @@ function ActionNode({ id, data, selected }: NodeProps) {
   const [hovered, setHovered] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteVal, setNoteVal] = useState((nodeData.note as string) || "");
+  const whatRef = useRef<HTMLInputElement>(null);
+  const noteCommittedRef = useRef((nodeData.note as string) || "");
 
   // Autocomplete state — track which field dropdown is open
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [filteredSuggestions, setFilteredSuggestions] = useState<string[]>([]);
-  // Ref to prevent blur from closing dropdown when clicking a suggestion
-  const isSelectingRef = useRef(false);
 
   useEffect(() => {
     setWhatVal(nodeData.what || "");
     setSystemVal(nodeData.where || nodeData.system || "");
     setRoleVal(nodeData.role || "");
     setNoteVal((nodeData.note as string) || "");
+    noteCommittedRef.current = (nodeData.note as string) || "";
   }, [nodeData.what, nodeData.where, nodeData.system, nodeData.role, nodeData.note]);
+
+  useEffect(() => {
+    if (nodeData.autoFocus && whatRef.current) {
+      whatRef.current.focus();
+      nodeData.onAutoFocused?.();
+    }
+  }, [nodeData.autoFocus, nodeData.onAutoFocused]);
 
   const getSuggestionList = useCallback((field: string): string[] => {
     const sug = nodeData.suggestions;
@@ -64,17 +74,16 @@ function ActionNode({ id, data, selected }: NodeProps) {
   }, [computeFiltered]);
 
   const handleBlur = useCallback((field: string, value: string) => {
-    setTimeout(() => {
-      if (isSelectingRef.current) {
-        isSelectingRef.current = false;
-        return;
-      }
-      setOpenDropdown(null);
-      setFilteredSuggestions([]);
-      if (nodeData.onFieldChange) {
-        nodeData.onFieldChange(id, field, value);
-      }
-    }, 250);
+    // Commit synchronously. React flushes this state update before the next
+    // discrete event (e.g. a click on the convert button), so the committed
+    // value is always visible downstream — no 250ms deferral that could race
+    // the conversion or get skipped and silently drop the edit. Suggestion
+    // clicks preventDefault their mousedown, so they never trigger this blur.
+    setOpenDropdown(cur => (cur === field ? null : cur));
+    setFilteredSuggestions([]);
+    if (nodeData.onFieldChange) {
+      nodeData.onFieldChange(id, field, value);
+    }
   }, [id, nodeData.onFieldChange]);
 
   const handleChange = useCallback((field: string, value: string) => {
@@ -85,7 +94,6 @@ function ActionNode({ id, data, selected }: NodeProps) {
   }, [computeFiltered]);
 
   const selectSuggestion = useCallback((field: string, value: string) => {
-    isSelectingRef.current = true;
     if (field === "what") setWhatVal(value);
     else if (field === "where") setSystemVal(value);
     else if (field === "role") setRoleVal(value);
@@ -115,7 +123,8 @@ function ActionNode({ id, data, selected }: NodeProps) {
   }, []);
 
   const handleNoteBlur = useCallback(() => {
-    if (nodeData.onFieldChange) {
+    if (nodeData.onFieldChange && noteVal !== noteCommittedRef.current) {
+      noteCommittedRef.current = noteVal;
       nodeData.onFieldChange(id, "note", noteVal);
     }
   }, [id, noteVal, nodeData.onFieldChange]);
@@ -215,12 +224,12 @@ function ActionNode({ id, data, selected }: NodeProps) {
         {/* Handles — one target + one source per side, both at the same
             pixel so the user sees a single teal dot per side. Stable IDs
             let us auto-pick the best side based on relative node position. */}
-        <Handle type="target" position={Position.Top}    id="t-top"    className={`${handleClass} !-top-[8px]`} />
-        <Handle type="target" position={Position.Right}  id="t-right"  className={`${handleClass} !-right-[8px]`} />
-        <Handle type="target" position={Position.Bottom} id="t-bottom" className={`${handleClass} !-bottom-[8px]`} />
-        <Handle type="target" position={Position.Left}   id="t-left"   className={`${handleClass} !-left-[8px]`} />
-        <Handle type="source" position={Position.Top}    id="s-top"    className={`${handleClass} !-top-[8px]`} />
-        <Handle type="source" position={Position.Left}   id="s-left"   className={`${handleClass} !-left-[8px]`} />
+        <Handle type="target" position={Position.Top}    id="t-top"    className={handleClass} />
+        <Handle type="target" position={Position.Right}  id="t-right"  className={handleClass} />
+        <Handle type="target" position={Position.Bottom} id="t-bottom" className={handleClass} />
+        <Handle type="target" position={Position.Left}   id="t-left"   className={handleClass} />
+        <Handle type="source" position={Position.Top}    id="s-top"    className={handleClass} />
+        <Handle type="source" position={Position.Left}   id="s-left"   className={handleClass} />
 
         {/* Action / What field */}
         <div className="relative w-full">
@@ -231,6 +240,7 @@ function ActionNode({ id, data, selected }: NodeProps) {
           ) : (
             <>
               <input
+                ref={whatRef}
                 className="w-full bg-transparent text-center text-[15px] font-medium text-gray-800 placeholder:text-gray-300 outline-none border-none leading-relaxed nodrag nopan"
                 value={whatVal}
                 onChange={(e) => handleChange("what", e.target.value)}
@@ -298,8 +308,8 @@ function ActionNode({ id, data, selected }: NodeProps) {
           )}
         </div>
 
-        <Handle type="source" position={Position.Bottom} id="s-bottom" className={`${handleClass} !-bottom-[8px]`} />
-        <Handle type="source" position={Position.Right}  id="s-right"  className={`${handleClass} !-right-[8px]`} />
+        <Handle type="source" position={Position.Bottom} id="s-bottom" className={handleClass} />
+        <Handle type="source" position={Position.Right}  id="s-right"  className={handleClass} />
       </div>
 
       {/* Post-it note popup */}

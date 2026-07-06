@@ -133,6 +133,7 @@ export function useEditorHistory(params: {
       system: d.system ?? d.where,
       role: d.role,
       question: d.question,
+      note: d.note,
       label: d.label,
     });
     const remap: NodeRemap = {

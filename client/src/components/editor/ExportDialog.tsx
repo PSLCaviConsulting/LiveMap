@@ -4,22 +4,47 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Download, FileImage, FileText, FileType } from "lucide-react";
+import { Download, FileImage, FileText, FileType, Table } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import type { Node, Edge } from "@xyflow/react";
+import { toLucidCsv } from "@/lib/lucidCsv";
 
 interface ExportDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  nodes: Node[];
+  edges: Edge[];
+  processName?: string;
 }
 
-export default function ExportDialog({ open, onOpenChange }: ExportDialogProps) {
+export default function ExportDialog({ open, onOpenChange, nodes, edges, processName }: ExportDialogProps) {
   const [format, setFormat] = useState("png");
   const [exporting, setExporting] = useState(false);
+
+  const downloadText = (text: string, filename: string, mime: string) => {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.download = filename;
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   const handleExport = async () => {
     setExporting(true);
     try {
+      if (format === "csv") {
+        const csv = toLucidCsv(nodes, edges, processName || "Process Map");
+        const safe = (processName || "process-map").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+        downloadText(csv, `${safe}-lucidchart.csv`, "text/csv;charset=utf-8");
+        toast.success("Exported CSV for Lucidchart import");
+        onOpenChange(false);
+        setExporting(false);
+        return;
+      }
+
       const flowViewport = document.querySelector(".react-flow__viewport") as HTMLElement;
       if (!flowViewport) { toast.error("Canvas not found"); setExporting(false); return; }
 
@@ -81,6 +106,16 @@ export default function ExportDialog({ open, onOpenChange }: ExportDialogProps) 
                 <div>
                   <div className="font-medium">SVG Vector</div>
                   <div className="text-xs text-muted-foreground">Scalable vector graphic</div>
+                </div>
+              </Label>
+            </div>
+            <div className="flex items-center gap-3 p-3 rounded-lg border hover:bg-muted/50 cursor-pointer">
+              <RadioGroupItem value="csv" id="csv" />
+              <Label htmlFor="csv" className="flex items-center gap-2 cursor-pointer flex-1">
+                <Table className="h-4 w-4 text-teal-600" />
+                <div>
+                  <div className="font-medium">CSV for Lucidchart</div>
+                  <div className="text-xs text-muted-foreground">Import into Lucidchart as a process diagram</div>
                 </div>
               </Label>
             </div>

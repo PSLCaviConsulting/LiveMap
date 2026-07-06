@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 
 /**
@@ -14,6 +14,8 @@ function QuestionNode({ id, data, selected }: NodeProps) {
     onToggleNote?: (nodeId: string) => void;
     note?: string;
     readOnly?: boolean;
+    autoFocus?: boolean;
+    onAutoFocused?: () => void;
   };
   const readOnly = !!nodeData.readOnly;
 
@@ -21,11 +23,21 @@ function QuestionNode({ id, data, selected }: NodeProps) {
   const [hovered, setHovered] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteVal, setNoteVal] = useState((nodeData.note as string) || "");
+  const questionRef = useRef<HTMLTextAreaElement>(null);
+  const noteCommittedRef = useRef((nodeData.note as string) || "");
 
   useEffect(() => {
     setQuestionVal(nodeData.question || nodeData.label || "");
     setNoteVal((nodeData.note as string) || "");
+    noteCommittedRef.current = (nodeData.note as string) || "";
   }, [nodeData.question, nodeData.label, nodeData.note]);
+
+  useEffect(() => {
+    if (nodeData.autoFocus && questionRef.current) {
+      questionRef.current.focus();
+      nodeData.onAutoFocused?.();
+    }
+  }, [nodeData.autoFocus, nodeData.onAutoFocused]);
 
   const handleBlur = useCallback(() => {
     if (nodeData.onFieldChange) {
@@ -52,7 +64,8 @@ function QuestionNode({ id, data, selected }: NodeProps) {
   }, []);
 
   const handleNoteBlur = useCallback(() => {
-    if (nodeData.onFieldChange) {
+    if (nodeData.onFieldChange && noteVal !== noteCommittedRef.current) {
+      noteCommittedRef.current = noteVal;
       nodeData.onFieldChange(id, "note", noteVal);
     }
   }, [id, noteVal, nodeData.onFieldChange]);
@@ -146,35 +159,18 @@ function QuestionNode({ id, data, selected }: NodeProps) {
         </div>
       )}
 
-      {/* Target handles — one per side, stable IDs for auto-routing */}
-      <Handle
-        type="target"
-        id="t-left"
-        position={Position.Left}
-        className={handleClass}
-        style={{ top: "38%", left: 2 }}
-      />
-      <Handle
-        type="target"
-        id="t-top"
-        position={Position.Top}
-        className={handleClass}
-        style={{ top: -4, left: "50%" }}
-      />
-      <Handle
-        type="target"
-        id="t-right"
-        position={Position.Right}
-        className={handleClass}
-        style={{ top: "38%", right: 2 }}
-      />
-      <Handle
-        type="target"
-        id="t-bottom"
-        position={Position.Bottom}
-        className={handleClass}
-        style={{ bottom: 22, left: "50%" }}
-      />
+      {/* One target + one source handle per side, co-located so the user
+          sees a single teal dot per side. Question edges now pick the side
+          geometrically (like Action nodes), and Yes/No is decided by the
+          order branches are drawn — not by a fixed handle. */}
+      <Handle type="target" id="t-left"   position={Position.Left}   className={handleClass} style={{ top: "38%", left: 2 }} />
+      <Handle type="source" id="s-left"   position={Position.Left}   className={handleClass} style={{ top: "38%", left: 2 }} />
+      <Handle type="target" id="t-top"    position={Position.Top}    className={handleClass} style={{ top: -4, left: "50%" }} />
+      <Handle type="source" id="s-top"    position={Position.Top}    className={handleClass} style={{ top: -4, left: "50%" }} />
+      <Handle type="target" id="t-right"  position={Position.Right}  className={handleClass} style={{ top: "38%", right: 2 }} />
+      <Handle type="source" id="s-right"  position={Position.Right}  className={handleClass} style={{ top: "38%", right: 2 }} />
+      <Handle type="target" id="t-bottom" position={Position.Bottom} className={handleClass} style={{ bottom: 22, left: "50%" }} />
+      <Handle type="source" id="s-bottom" position={Position.Bottom} className={handleClass} style={{ bottom: 22, left: "50%" }} />
 
       {/* Question text */}
       <div
@@ -190,7 +186,8 @@ function QuestionNode({ id, data, selected }: NodeProps) {
           </div>
         ) : (
           <textarea
-            className="w-full bg-transparent text-center text-[15px] font-medium text-gray-800 placeholder:text-gray-300 outline-none border-none resize-none leading-snug nodrag"
+            ref={questionRef}
+            className="w-full bg-transparent text-center text-[15px] font-medium text-gray-800 placeholder:text-gray-300 outline-none border-none resize-none leading-snug nodrag nopan"
             value={questionVal}
             onChange={(e) => setQuestionVal(e.target.value)}
             onBlur={handleBlur}
@@ -202,39 +199,6 @@ function QuestionNode({ id, data, selected }: NodeProps) {
             style={{ marginTop: 8 }}
           />
         )}
-      </div>
-
-      {/* Two output handles: Yes (left) and No (right) — teal ring, hover-only */}
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        id="yes"
-        className={`
-          !w-3.5 !h-3.5 !border-[2.5px] !border-green-500 !bg-white !rounded-full
-          transition-all duration-150
-          ${!readOnly && (hovered || selected) ? "!opacity-100 !scale-100" : "!opacity-0 !scale-0"}
-        `}
-        style={{ left: "32%", bottom: 22 }}
-      />
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        id="no"
-        className={`
-          !w-3.5 !h-3.5 !border-[2.5px] !border-red-400 !bg-white !rounded-full
-          transition-all duration-150
-          ${!readOnly && (hovered || selected) ? "!opacity-100 !scale-100" : "!opacity-0 !scale-0"}
-        `}
-        style={{ left: "68%", bottom: 22 }}
-      />
-
-      {/* Yes / No labels */}
-      <div
-        className="absolute flex justify-between pointer-events-none"
-        style={{ bottom: 4, left: 40, right: 40 }}
-      >
-        <span className={`text-[11px] text-green-600 font-semibold tracking-wide transition-opacity duration-150 ${hovered || selected ? "opacity-100" : "opacity-0"}`}>Yes</span>
-        <span className={`text-[11px] text-red-500 font-semibold tracking-wide transition-opacity duration-150 ${hovered || selected ? "opacity-100" : "opacity-0"}`}>No</span>
       </div>
 
       {/* Post-it note popup */}
@@ -256,7 +220,7 @@ function QuestionNode({ id, data, selected }: NodeProps) {
               </button>
             </div>
             <textarea
-              className="w-full bg-white/60 border border-amber-200 rounded text-sm text-gray-700 p-2 outline-none resize-none focus:border-amber-400 focus:ring-1 focus:ring-amber-200 nodrag"
+              className="w-full bg-white/60 border border-amber-200 rounded text-sm text-gray-700 p-2 outline-none resize-none focus:border-amber-400 focus:ring-1 focus:ring-amber-200 nodrag nopan"
               value={noteVal}
               onChange={(e) => setNoteVal(e.target.value)}
               onBlur={handleNoteBlur}

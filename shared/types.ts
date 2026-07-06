@@ -18,6 +18,7 @@ export interface ProcessNode {
   system: string | null;
   role: string | null;
   question: string | null;
+  note: string | null;
   color: string | null;
   positionX: number;
   positionY: number;

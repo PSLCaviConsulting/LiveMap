@@ -22,6 +22,7 @@ export function dbNodesToFlow(dbNodes: ProcessNode[]): Node[] {
         system: n.system || "",
         role: n.role || "",
         question: n.question || "",
+        note: n.note || "",
         color: n.color || undefined,
         nodeType: n.type,
         groupId: n.groupId,

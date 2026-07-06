@@ -274,7 +274,7 @@ export async function getCanvasObject(id: number) {
 
 export async function createCanvasObject(data: {
   processId: number; type: "action" | "question" | "start" | "end" | "ghostAction" | "ghostQuestion" | "note";
-  label?: string; what?: string; where?: string; system?: string; role?: string; question?: string;
+  label?: string; what?: string; where?: string; system?: string; role?: string; question?: string; note?: string;
   color?: string; positionX: number; positionY: number; width?: number; height?: number; groupId?: number; data?: any;
 }) {
   const db = await getDb();
@@ -285,7 +285,7 @@ export async function createCanvasObject(data: {
 
 export async function updateCanvasObject(id: number, data: Partial<{
   type: "action" | "question" | "start" | "end" | "ghostAction" | "ghostQuestion" | "note";
-  label: string; what: string; where: string; system: string; role: string; question: string;
+  label: string; what: string; where: string; system: string; role: string; question: string; note: string;
   color: string; positionX: number; positionY: number; width: number; height: number;
   groupId: number | null; hidden: boolean; data: any;
 }>) {

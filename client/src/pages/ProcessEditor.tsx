@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { useParams, useLocation } from "wouter";
 import {
   ReactFlow, Background, Controls, MiniMap, ReactFlowProvider,
-  useNodesState, useEdgesState, useReactFlow,
+  useNodesState, useEdgesState, useReactFlow, SelectionMode,
   type Connection, type Node, type Edge, type OnConnect,
   type OnConnectEnd,
 } from "@xyflow/react";
@@ -46,6 +46,16 @@ const edgeTypes = {
   editableEdge: EditableEdge,
 };
 
+// A question's branches are Yes/No by draw order, not by a fixed handle:
+// the first edge drawn out of a question is "Yes", the second "No", and any
+// further branches are left unlabeled for the user to name.
+function questionBranchLabel(sourceNode: Node, currentEdges: Edge[]): string | null {
+  const isQ = sourceNode.type === "question" || (sourceNode.data as any)?.nodeType === "question";
+  if (!isQ) return null;
+  const outCount = currentEdges.filter(e => e.source === sourceNode.id).length;
+  return outCount === 0 ? "Yes" : outCount === 1 ? "No" : null;
+}
+
 function ProcessEditorInner() {
   const params = useParams<{ projectId: string; processId: string }>();
   const projectId = parseInt(params.projectId || "0");
@@ -76,6 +86,10 @@ function ProcessEditorInner() {
     flowPosition: { x: number; y: number };
   } | null>(null);
   const connectingNodeRef = useRef<{ nodeId: string; handleId: string | null } | null>(null);
+  // Id of a freshly-created node whose primary input should grab focus, so
+  // the interviewer can type immediately after a pull/spawn without an extra
+  // click. Cleared by the node once it has focused.
+  const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
 
   const utils = trpc.useUtils();
   const { data: processData, isLoading } = trpc.process.get.useQuery({ id: processId });
@@ -152,7 +166,7 @@ function ProcessEditorInner() {
     }));
     const edge = edges.find(e => e.id === edgeId);
     const dbId = edge?.data?.dbId as number;
-    if (dbId) {
+    if (dbId && dbId > 0) {
       updateEdgeMut.mutate({ id: dbId, label });
     }
   }, [edges]);
@@ -181,9 +195,34 @@ function ProcessEditorInner() {
       data: newData,
       style: newStyle,
     };
-    history.recordUpdateNodes([before], [after]);
+
+    // The source handles differ per node type (question: "yes"/"no";
+    // action: "s-*"). Any outgoing edge still anchored to the old node's
+    // source handle would reference an id the new node doesn't have, and
+    // React Flow silently drops it. Recompute handles for every incident
+    // edge against the post-conversion node so connectors stay attached.
+    const convertedNode: Node = { ...node, type: newType, style: newStyle, data: newData };
+    const edgeBefore: EdgeSnap[] = [];
+    const edgeAfter: EdgeSnap[] = [];
+    for (const e of edges) {
+      if (e.source !== nodeId && e.target !== nodeId) continue;
+      const src = e.source === nodeId ? convertedNode : nodes.find(n => n.id === e.source);
+      const tgt = e.target === nodeId ? convertedNode : nodes.find(n => n.id === e.target);
+      if (!src || !tgt) continue;
+      const picked = pickBestHandles(src, tgt, { currentSourceHandle: e.sourceHandle ?? null });
+      if (e.sourceHandle !== picked.sourceHandle || e.targetHandle !== picked.targetHandle) {
+        const eb = snapshotEdge(e);
+        edgeBefore.push(eb);
+        edgeAfter.push({ ...eb, sourceHandle: picked.sourceHandle, targetHandle: picked.targetHandle });
+      }
+    }
+
+    void history.transaction(async () => {
+      history.recordUpdateNodes([before], [after]);
+      if (edgeBefore.length > 0) history.recordUpdateEdges(edgeBefore, edgeAfter);
+    });
     toast.success(`Converted to ${newType === "question" ? "Question" : "Action"} node`);
-  }, [nodes, history]);
+  }, [nodes, edges, history]);
 
   // Debounce suggestion cache invalidation. A rapid burst of field edits
   // (tab-through 3 fields) would otherwise fire 3 refetches; we only need
@@ -230,14 +269,14 @@ function ProcessEditorInner() {
 
     const node = nodes.find(n => n.id === nodeId);
     const dbId = node?.data?.dbId as number;
-    if (dbId) {
+    if (dbId && dbId > 0) {
       const updateData: { id: number; [key: string]: any } = { id: dbId };
       if (field === "where") { updateData.where = value; updateData.system = value; }
       else if (field === "what") { updateData.what = value; }
       else if (field === "role") { updateData.role = value; }
       else if (field === "question") { updateData.question = value; updateData.label = value; }
       else if (field === "label") { updateData.label = value; }
-      else if (field === "note") { updateData.label = value; } // notes stored in label
+      else if (field === "note") { updateData.note = value; }
       updateNode.mutate(updateData);
     }
 
@@ -247,6 +286,7 @@ function ProcessEditorInner() {
   }, [nodes, scheduleSuggestionsInvalidate]);
 
   // ── Build nodes with callbacks and suggestions ──────────────────
+  const clearFocusNode = useCallback(() => setFocusNodeId(null), []);
   const nodesWithCallbacks = useMemo(() => {
     return nodes.map(n => ({
       ...n,
@@ -254,26 +294,24 @@ function ProcessEditorInner() {
         ...n.data,
         onFieldChange: handleFieldChange,
         onConvertType: handleConvertType,
+        autoFocus: n.id === focusNodeId,
+        onAutoFocused: clearFocusNode,
         suggestions: suggestions || { systems: [], actions: [], roles: [] },
       },
     }));
-  }, [nodes, handleFieldChange, handleConvertType, suggestions]);
+  }, [nodes, handleFieldChange, handleConvertType, suggestions, focusNodeId, clearFocusNode]);
 
   // ── Build edges with label change callback and source node type info ──
+  // Yes/No now live on the edge label (set by draw order), so we just pass
+  // the stored label through.
   const edgesWithCallbacks = useMemo(() => {
     return edges.map(e => {
       const sourceNode = nodes.find(n => n.id === e.source);
       const sourceNodeType = sourceNode?.type || (sourceNode?.data?.nodeType as string) || "";
-      // Auto-label edges from question nodes
-      let label = e.label as string | undefined;
-      if (!label && sourceNodeType === "question") {
-        if (e.sourceHandle === "yes") label = "Yes";
-        else if (e.sourceHandle === "no") label = "No";
-      }
       return {
         ...e,
         type: "editableEdge",
-        label,
+        label: e.label as string | undefined,
         data: {
           ...e.data,
           onLabelChange: handleEdgeLabelChange,
@@ -283,10 +321,28 @@ function ProcessEditorInner() {
     });
   }, [edges, nodes, handleEdgeLabelChange]);
 
+  // Hydrate local canvas state from the server exactly once per process.
+  // Re-running on every processData identity change (e.g. a refetch) would
+  // blow away in-flight nodes and unsaved edits, so we gate on processId.
+  const hydratedProcessIdRef = useRef<number | null>(null);
   useEffect(() => {
-    if (processData) {
+    if (processData && hydratedProcessIdRef.current !== processId) {
+      hydratedProcessIdRef.current = processId;
       const flowNodes = dbNodesToFlow(processData.nodes);
       const flowEdges = dbEdgesToFlow(processData.edges);
+
+      // Migrate legacy question branches: Yes/No used to be encoded in the
+      // source handle id ("yes"/"no"); they're now edge labels. Capture the
+      // label before the reroute below rewrites the handle to a geometric side.
+      for (let i = 0; i < flowEdges.length; i++) {
+        const e = flowEdges[i];
+        if (!e.label && (e.sourceHandle === "yes" || e.sourceHandle === "no")) {
+          const lbl = e.sourceHandle === "yes" ? "Yes" : "No";
+          flowEdges[i] = { ...e, label: lbl };
+          const dbId = e.data?.dbId as number | undefined;
+          if (dbId) updateEdgeMut.mutate({ id: dbId, label: lbl });
+        }
+      }
 
       // Normalize handles on load: any edge whose handles don't point at the
       // other node's facing side gets rewritten here, and persisted so the
@@ -316,7 +372,7 @@ function ProcessEditorInner() {
       setNodes(flowNodes);
       setEdges(flowEdges);
     }
-  }, [processData]);
+  }, [processData, processId]);
 
   // ── Standard connection (handle to handle) ──────────────────────
   const onConnect: OnConnect = useCallback((connection: Connection) => {
@@ -324,30 +380,28 @@ function ProcessEditorInner() {
     const targetNode = nodes.find(n => n.id === connection.target);
 
     // Override whatever handles the user happened to drag from with the
-    // pair facing each other's centers. Question sources keep Yes/No.
+    // pair facing each other's centers.
     let sourceHandle = connection.sourceHandle || undefined;
     let targetHandle = connection.targetHandle || undefined;
     if (sourceNode && targetNode) {
-      const picked = pickBestHandles(sourceNode, targetNode, {
-        currentSourceHandle: connection.sourceHandle ?? null,
-      });
+      const picked = pickBestHandles(sourceNode, targetNode);
       sourceHandle = picked.sourceHandle;
       targetHandle = picked.targetHandle;
     }
 
-    // Determine auto-label for question node edges
-    const isQuestion = sourceNode?.type === "question" || sourceNode?.data?.nodeType === "question";
-    let label: string | undefined;
-    if (isQuestion) {
-      if (sourceHandle === "yes") label = "Yes";
-      else if (sourceHandle === "no") label = "No";
-    }
+    // First branch out of a question is Yes, second is No (by draw order).
+    const label = sourceNode ? questionBranchLabel(sourceNode, edges) ?? undefined : undefined;
 
-    // If either endpoint is a still-unsaved temp node, drop the connect —
-    // we can't send a numeric sourceId/targetId to the server yet.
+    // If either endpoint is a still-unsaved temp node (dbId is the -1
+    // sentinel until the create round-trip resolves), drop the connect —
+    // we can't send a numeric sourceId/targetId to the server yet, and a
+    // truthy -1 would otherwise slip through and create a phantom edge.
     const sourceDbId = sourceNode?.data?.dbId as number | undefined;
     const targetDbId = targetNode?.data?.dbId as number | undefined;
-    if (!sourceDbId || !targetDbId) return;
+    if (!sourceDbId || sourceDbId < 0 || !targetDbId || targetDbId < 0) {
+      toast.error("Still saving that node — try the connection again in a moment");
+      return;
+    }
 
     void history.createEdge({
       sourceFlowId: connection.source!,
@@ -357,7 +411,7 @@ function ProcessEditorInner() {
       label: label ?? null,
       edgeType: "smoothstep",
     });
-  }, [nodes, history]);
+  }, [nodes, edges, history]);
 
   // ── Pull-to-create: track which node/handle started the connection ──
   const onConnectStart = useCallback((_: any, params: { nodeId: string | null; handleId: string | null }) => {
@@ -367,69 +421,101 @@ function ProcessEditorInner() {
     };
   }, []);
 
-  // ── Pull-to-create: when connection dropped on empty space, create Action node directly ──
-  const onConnectEnd: OnConnectEnd = useCallback((event: MouseEvent | TouchEvent) => {
-    if (!connectingNodeRef.current) return;
+  // ── Spawn a new node already connected to an existing one. Shared by
+  // pull-to-create (drag off a handle) and the keyboard spawn shortcut.
+  // `startedFromTarget` means the gesture began on a target-type handle
+  // (a Question's side handle, or an End node — which only has target
+  // handles), so the NEW node becomes the source and the existing node the
+  // target; otherwise the edge would carry a source handle the existing
+  // node doesn't have and React Flow would silently drop it.
+  const createConnectedNode = useCallback((opts: {
+    sourceNode: Node;
+    sourceHandleId: string | null;
+    startedFromTarget: boolean;
+    newType: "action" | "question";
+    topLeft: { x: number; y: number };
+    focus?: boolean;
+  }) => {
+    const { sourceNode, sourceHandleId, startedFromTarget, newType, topLeft, focus } = opts;
+    const dims = newType === "question" ? { width: 260, height: 180 } : { width: 200, height: 160 };
+    const newNode: Node = { id: "temp-connect-target", type: newType, position: topLeft, data: {}, style: dims };
 
-    const targetIsPane = (event.target as HTMLElement)?.classList?.contains("react-flow__pane");
-    if (!targetIsPane) return;
-
-    const clientX = "clientX" in event ? event.clientX : event.touches?.[0]?.clientX || 0;
-    const clientY = "clientY" in event ? event.clientY : event.touches?.[0]?.clientY || 0;
-
-    const flowPosition = reactFlowInstance.screenToFlowPosition({ x: clientX, y: clientY });
-
-    // Directly create an Action node — no type picker for fast workflow
-    const sourceNodeId = connectingNodeRef.current.nodeId;
-    const sourceHandleId = connectingNodeRef.current.handleId;
-    const width = 200;
-    const height = 160;
-    const posX = Math.round(flowPosition.x - width / 2);
-    const posY = Math.round(flowPosition.y - height / 2);
-
-    const sourceNode = nodes.find(n => n.id === sourceNodeId);
-    const isQuestion = sourceNode?.type === "question" || sourceNode?.data?.nodeType === "question";
+    let srcHandle: string | null;
+    let tgtHandle: string | null;
     let edgeLabel: string | null = null;
-    if (isQuestion) {
-      if (sourceHandleId === "yes") edgeLabel = "Yes";
-      else if (sourceHandleId === "no") edgeLabel = "No";
-    }
-
-    // Compute handles up front so the edge created after the node has them.
-    let srcHandle: string | null = sourceHandleId || null;
-    let tgtHandle: string | null = null;
-    if (sourceNode) {
-      const fakeTarget: Node = {
-        id: "temp-pull-target",
-        type: "action",
-        position: { x: posX, y: posY },
-        data: {},
-        style: { width, height },
-      };
-      const picked = pickBestHandles(sourceNode, fakeTarget, {
-        currentSourceHandle: sourceHandleId,
-      });
+    if (startedFromTarget) {
+      // new node → existing node
+      const picked = pickBestHandles(newNode, sourceNode, { currentSourceHandle: null });
+      srcHandle = picked.sourceHandle ?? null;
+      tgtHandle = sourceHandleId ?? picked.targetHandle ?? null;
+    } else {
+      // existing node → new node
+      const picked = pickBestHandles(sourceNode, newNode);
       srcHandle = picked.sourceHandle ?? null;
       tgtHandle = picked.targetHandle ?? null;
+      edgeLabel = questionBranchLabel(sourceNode, edges);
     }
 
     void history.transaction(async () => {
       const created = await history.createNode({
-        type: "action",
-        position: { x: posX, y: posY },
-        style: { width, height },
-        data: { what: "", where: "", system: "", role: "" },
+        type: newType,
+        position: topLeft,
+        style: dims,
+        data: newType === "question"
+          ? { question: "" }
+          : { what: "", where: "", system: "", role: "" },
       });
+      const newFlowId = String(created.id);
       await history.createEdge({
-        sourceFlowId: sourceNodeId,
-        targetFlowId: String(created.id),
+        sourceFlowId: startedFromTarget ? newFlowId : sourceNode.id,
+        targetFlowId: startedFromTarget ? sourceNode.id : newFlowId,
         sourceHandle: srcHandle,
         targetHandle: tgtHandle,
         label: edgeLabel,
         edgeType: "smoothstep",
       });
+      if (focus) {
+        setNodes(nds => nds.map(n => ({ ...n, selected: n.id === newFlowId })));
+        setFocusNodeId(newFlowId);
+      }
     });
-  }, [reactFlowInstance, nodes, history]);
+  }, [history, setNodes, edges]);
+
+  // ── Pull-to-create: connection dropped on empty space → new connected node.
+  // Uses React Flow v12's connectionState so we (a) never double-create when
+  // the drop lands within the snap radius of a real handle, (b) attach to
+  // whatever node/handle the drag actually started from (works for Question
+  // side handles and End nodes), and (c) read touch coordinates correctly.
+  const onConnectEnd: OnConnectEnd = useCallback((event, connectionState) => {
+    // A valid connection completed (onConnect handled it) or the release
+    // landed on a handle — don't also spawn a node.
+    if (!connectionState || connectionState.isValid || connectionState.toHandle) return;
+    const fromNode = connectionState.fromNode;
+    const fromHandle = connectionState.fromHandle;
+    if (!fromNode) return;
+
+    const sourceNode = nodes.find(n => n.id === fromNode.id);
+    if (!sourceNode) return;
+    const sourceDbId = sourceNode.data?.dbId as number | undefined;
+    if (!sourceDbId || sourceDbId < 0) {
+      toast.error("Still saving that node — try the pull again in a moment");
+      return;
+    }
+
+    const { clientX, clientY } = "changedTouches" in event ? event.changedTouches[0] : event;
+    const flowPosition = reactFlowInstance.screenToFlowPosition({ x: clientX, y: clientY });
+    const startedFromTarget = fromHandle?.type === "target";
+    const width = 200, height = 160;
+
+    createConnectedNode({
+      sourceNode,
+      sourceHandleId: fromHandle?.id ?? null,
+      startedFromTarget,
+      newType: "action",
+      topLeft: { x: Math.round(flowPosition.x - width / 2), y: Math.round(flowPosition.y - height / 2) },
+      focus: true,
+    });
+  }, [reactFlowInstance, nodes, createConnectedNode]);
 
   // ── Handle node type selection from pull-to-create menu ──
   const handleDropMenuSelect = useCallback((type: "action" | "question") => {
@@ -503,48 +589,119 @@ function ProcessEditorInner() {
   const onDrop = useCallback((event: React.DragEvent) => {
     event.preventDefault();
     const type = event.dataTransfer.getData("application/reactflow-type");
-    if (!type || (type !== "action" && type !== "question")) return;
+    if (type !== "action" && type !== "question" && type !== "start" && type !== "end" && type !== "note") return;
 
     const position = reactFlowInstance.screenToFlowPosition({
       x: event.clientX,
       y: event.clientY,
     });
 
-    const defaults: Record<string, any> = {
-      action: { width: 200, height: 160, what: "", where: "", role: "" },
-      question: { width: 260, height: 180, question: "" },
+    const defaults: Record<string, { width: number; height: number }> = {
+      action: { width: 200, height: 160 },
+      question: { width: 260, height: 180 },
+      start: { width: 100, height: 44 },
+      end: { width: 100, height: 44 },
+      note: { width: 180, height: 80 },
     };
     const d = defaults[type];
     const posX = Math.round(position.x - d.width / 2);
     const posY = Math.round(position.y - d.height / 2);
-    void history.createNode({
-      type: type as "action" | "question",
-      position: { x: posX, y: posY },
-      style: { width: d.width, height: d.height },
-      data: {
-        what: d.what ?? "",
-        where: d.where ?? "",
-        system: d.where ?? "",
-        role: d.role ?? "",
-        question: d.question ?? "",
-      },
-    });
-  }, [reactFlowInstance, history]);
-
-  // ── Node drag stop: save position + reroute handles + swimlane auto-assign ──
-  const onNodeDragStop = useCallback((_: any, node: Node) => {
-    const dbId = node.data?.dbId as number;
-    if (dbId) {
-      updateNode.mutate({
-        id: dbId,
-        positionX: Math.round(node.position.x),
-        positionY: Math.round(node.position.y),
+    void history.transaction(async () => {
+      const created = await history.createNode({
+        type,
+        position: { x: posX, y: posY },
+        style: { width: d.width, height: d.height },
+        data: { what: "", where: "", system: "", role: "", question: "", label: "" },
       });
+      // Select + focus the dropped node so the interviewer can type at once.
+      const newFlowId = String(created.id);
+      setNodes(nds => nds.map(n => ({ ...n, selected: n.id === newFlowId })));
+      setFocusNodeId(newFlowId);
+    });
+  }, [reactFlowInstance, history, setNodes]);
+
+  // ── Drag-to-merge: an EMPTY Action/Question dropped on top of another
+  // node collapses into it — the empty node disappears and its connector
+  // re-points to the node it was dropped onto. Returns true if it merged.
+  const tryMergeEmptyNode = useCallback((dragged: Node): boolean => {
+    if (dragged.type !== "action" && dragged.type !== "question") return false;
+    const d = (dragged.data ?? {}) as any;
+    const isEmpty = dragged.type === "action"
+      ? !((d.what || "").trim() || (d.where || d.system || "").trim() || (d.role || "").trim() || (d.note || "").trim())
+      : !((d.question || "").trim() || (d.note || "").trim());
+    if (!isEmpty) return false;
+
+    const rect = (n: Node) => {
+      const w = (n.style?.width as number) || (n.type === "question" ? 260 : n.type === "action" ? 200 : n.type === "note" ? 180 : 100);
+      const h = (n.style?.height as number) || (n.type === "question" ? 180 : n.type === "action" ? 160 : n.type === "note" ? 80 : 44);
+      return { x: n.position.x, y: n.position.y, w, h };
+    };
+    const dr = rect(dragged);
+    const cx = dr.x + dr.w / 2, cy = dr.y + dr.h / 2;
+    const target = nodes.find(n => {
+      if (n.id === dragged.id || n.type === "note") return false;
+      const r = rect(n);
+      return cx >= r.x && cx <= r.x + r.w && cy >= r.y && cy <= r.y + r.h;
+    });
+    if (!target) return false;
+
+    const incident = edges.filter(e => e.source === dragged.id || e.target === dragged.id);
+    if (incident.length === 0) return false; // nothing to carry over — treat as a normal move
+
+    // Re-point each incident edge's dragged-endpoint to the target, dropping
+    // self-loops and duplicates, and recompute handles for the new geometry.
+    const pairs = new Set(edges.filter(e => e.source !== dragged.id && e.target !== dragged.id).map(e => `${e.source}->${e.target}`));
+    const before: EdgeSnap[] = [];
+    const after: EdgeSnap[] = [];
+    const toDelete: Edge[] = [];
+    for (const e of incident) {
+      const ns = e.source === dragged.id ? target.id : e.source;
+      const nt = e.target === dragged.id ? target.id : e.target;
+      if (ns === nt || pairs.has(`${ns}->${nt}`)) { toDelete.push(e); continue; }
+      pairs.add(`${ns}->${nt}`);
+      const srcNode = ns === target.id ? target : nodes.find(n => n.id === ns);
+      const tgtNode = nt === target.id ? target : nodes.find(n => n.id === nt);
+      const b = snapshotEdge(e);
+      const picked = srcNode && tgtNode ? pickBestHandles(srcNode, tgtNode) : { sourceHandle: e.sourceHandle ?? null, targetHandle: e.targetHandle ?? null };
+      before.push(b);
+      after.push({ ...b, source: ns, target: nt, sourceHandle: picked.sourceHandle, targetHandle: picked.targetHandle });
     }
 
-    // Reroute handles for every edge touching this node so the connection
-    // attaches on the side now facing the other end.
-    const changes = rerouteEdgesForNodes([node.id], nodes, edges);
+    void history.transaction(async () => {
+      if (before.length > 0) history.recordUpdateEdges(before, after);
+      for (const e of toDelete) history.deleteEdge(snapshotEdge(e));
+      history.deleteNode(snapshotNode(dragged), []);
+    });
+    toast.success("Merged into node");
+    return true;
+  }, [nodes, edges, history]);
+
+  // ── Node drag stop: save position + reroute handles + swimlane auto-assign ──
+  const onNodeDragStop = useCallback((_: any, node: Node, draggedNodes?: Node[]) => {
+    const moved = draggedNodes && draggedNodes.length > 0 ? draggedNodes : [node];
+
+    // A single empty node dragged onto another merges into it.
+    if (moved.length === 1 && tryMergeEmptyNode(node)) return;
+
+    // React Flow v12 passes every node that moved in the drag (the whole
+    // selection). Persist all of them, not just the grabbed one, or the
+    // rest snap back on reload.
+    const posUpdates = moved
+      .map(n => {
+        const id = n.data?.dbId as number;
+        if (!id || id < 0) return null;
+        return { id, positionX: Math.round(n.position.x), positionY: Math.round(n.position.y) };
+      })
+      .filter((u): u is { id: number; positionX: number; positionY: number } => u !== null);
+    if (posUpdates.length === 1) {
+      updateNode.mutate(posUpdates[0]);
+    } else if (posUpdates.length > 1) {
+      bulkUpdateNodesMut.mutate({ updates: posUpdates });
+    }
+
+    // Reroute handles for every edge touching any moved node so the
+    // connection attaches on the side now facing the other end.
+    const changes = rerouteEdgesForNodes(moved.map(n => n.id), nodes, edges);
     if (changes.length > 0) {
       const byId = new Map(changes.map(c => [c.edge.id, c] as const));
       setEdges(eds => eds.map(e => {
@@ -589,7 +746,7 @@ function ProcessEditorInner() {
       handleFieldChange(node.id, "role", targetLane.name);
       toast.success(`Role updated to "${targetLane.name}"`);
     }
-  }, [nodes, showSwimlanes, handleFieldChange]);
+  }, [nodes, edges, showSwimlanes, handleFieldChange, tryMergeEmptyNode]);
 
   const addNode = useCallback((type: "action" | "question" | "note") => {
     const center = reactFlowInstance.screenToFlowPosition({
@@ -680,25 +837,47 @@ function ProcessEditorInner() {
     setDropMenu(null);
   }, []);
 
+  // After a bulk relayout, edges keep their old handle sides and end up
+  // attached to the wrong faces. Recompute handles against the new node
+  // positions and fold both changes into one undoable step.
+  const relayoutEdgeSnaps = useCallback((newNodes: Node[]) => {
+    const changes = rerouteEdgesForNodes(newNodes.map(n => n.id), newNodes, edges);
+    const before = changes.map(c => snapshotEdge(c.edge));
+    const after: EdgeSnap[] = changes.map(c => ({
+      ...snapshotEdge(c.edge),
+      sourceHandle: c.sourceHandle,
+      targetHandle: c.targetHandle,
+    }));
+    return { before, after };
+  }, [edges]);
+
   const handleAutoFormat = useCallback(() => {
     const before = nodes.map(snapshotNode);
     const formatted = autoLayout(nodes, edges);
     const after = formatted.map(snapshotNode);
-    history.recordUpdateNodes(before, after);
+    const edgeSnaps = relayoutEdgeSnaps(formatted);
+    void history.transaction(async () => {
+      history.recordUpdateNodes(before, after);
+      if (edgeSnaps.before.length > 0) history.recordUpdateEdges(edgeSnaps.before, edgeSnaps.after);
+    });
     setTimeout(() => reactFlowInstance.fitView({ padding: 0.2 }), 100);
     toast.success("Layout formatted");
-  }, [nodes, edges, history, reactFlowInstance]);
+  }, [nodes, edges, history, reactFlowInstance, relayoutEdgeSnaps]);
 
   const handleAutoSwimlane = useCallback(() => {
     const before = nodes.map(snapshotNode);
     const result = autoFormatBySwimlane(nodes, edges, "role");
     const after = result.nodes.map(snapshotNode);
-    history.recordUpdateNodes(before, after);
+    const edgeSnaps = relayoutEdgeSnaps(result.nodes);
+    void history.transaction(async () => {
+      history.recordUpdateNodes(before, after);
+      if (edgeSnaps.before.length > 0) history.recordUpdateEdges(edgeSnaps.before, edgeSnaps.after);
+    });
     setTimeout(() => reactFlowInstance.fitView({ padding: 0.2 }), 100);
     toast.success("Nodes organized by role");
     setShowSwimlanes(true);
     setSwimlaneOpen(true);
-  }, [nodes, edges, history, reactFlowInstance]);
+  }, [nodes, edges, history, reactFlowInstance, relayoutEdgeSnaps]);
 
   // ── Duplicate selected nodes helper ──────────────────────────────
   const duplicateSelected = useCallback(() => {
@@ -731,24 +910,65 @@ function ProcessEditorInner() {
     toast.success(`Duplicated ${selected.length} node${selected.length > 1 ? "s" : ""}`);
   }, [nodes, history]);
 
-  // ── Delete selected nodes + their incident edges in one undoable step.
-  const deleteSelected = useCallback((selected: Node[]) => {
-    if (selected.length === 0) return;
-    const selectedIds = new Set(selected.map(n => n.id));
+  // ── Delete selected nodes (+ their incident edges) and any standalone
+  // selected edges in one undoable step. This is the SINGLE delete path —
+  // React Flow's built-in delete is disabled (deleteKeyCode={null}) so we
+  // don't get two competing removals and a divergent undo stack.
+  const deleteSelected = useCallback((selectedNodes: Node[], selectedEdges: Edge[]) => {
+    if (selectedNodes.length === 0 && selectedEdges.length === 0) return;
+    const nodeIds = new Set(selectedNodes.map(n => n.id));
     void history.transaction(async () => {
-      for (const node of selected) {
+      for (const node of selectedNodes) {
         const incident = edges.filter(e => e.source === node.id || e.target === node.id).map(snapshotEdge);
         history.deleteNode(snapshotNode(node), incident);
       }
-      // Also drop any edges whose other end is another selected node — they
-      // will be captured as incident edges above, so this is already handled.
-      void selectedIds;
+      // Standalone selected edges not already removed as a node's incident edge.
+      for (const e of selectedEdges) {
+        if (nodeIds.has(e.source) || nodeIds.has(e.target)) continue;
+        history.deleteEdge(snapshotEdge(e));
+      }
     });
-    toast.success(`Deleted ${selected.length} node${selected.length > 1 ? "s" : ""}`);
+    const n = selectedNodes.length, m = selectedEdges.filter(e => !nodeIds.has(e.source) && !nodeIds.has(e.target)).length;
+    if (n > 0) toast.success(`Deleted ${n} node${n > 1 ? "s" : ""}`);
+    else if (m > 0) toast.success(`Deleted ${m} connection${m > 1 ? "s" : ""}`);
   }, [edges, history]);
+
+  // ── Keyboard spawn: create a connected next node from the selected one. ──
+  const spawnNextNode = useCallback((newType: "action" | "question") => {
+    const selected = nodes.filter(n => n.selected);
+    if (selected.length !== 1) return;
+    const source = selected[0];
+    if (source.type === "note") return;
+    const dbId = source.data?.dbId as number | undefined;
+    if (!dbId || dbId < 0) {
+      toast.error("Still saving that node — try again in a moment");
+      return;
+    }
+    // Place the new node to the right of the source, vertically centered.
+    const srcW = (source.style?.width as number) || 200;
+    const srcH = (source.style?.height as number) || 160;
+    const newW = newType === "question" ? 260 : 200;
+    const newH = newType === "question" ? 180 : 160;
+    const topLeft = {
+      x: Math.round(source.position.x + srcW + 80),
+      y: Math.round(source.position.y + srcH / 2 - newH / 2),
+    };
+    // A question source starts from its "yes" handle (source-type); every
+    // other node uses its right/best source handle — never a target handle.
+    const isQuestion = source.type === "question" || source.data?.nodeType === "question";
+    createConnectedNode({
+      sourceNode: source,
+      sourceHandleId: isQuestion ? "yes" : null,
+      startedFromTarget: false,
+      newType,
+      topLeft,
+      focus: true,
+    });
+  }, [nodes, createConnectedNode]);
 
   useEditorKeyboard({
     nodes,
+    edges,
     setNodes,
     onUndo: history.undo,
     onRedo: history.redo,
@@ -757,6 +977,7 @@ function ProcessEditorInner() {
       setContextMenu(null);
       setDropMenu(null);
     },
+    onSpawnNext: spawnNextNode,
     onDeleteSelected: deleteSelected,
   });
 
@@ -855,6 +1076,12 @@ function ProcessEditorInner() {
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           defaultEdgeOptions={{ type: "editableEdge" }}
+          deleteKeyCode={null}
+          zoomOnDoubleClick={false}
+          panOnDrag={[2]}
+          selectionOnDrag
+          selectionMode={SelectionMode.Partial}
+          onPaneContextMenu={(e) => e.preventDefault()}
           fitView
           connectionLineStyle={{ stroke: "#9ca3af", strokeWidth: 2 }}
         >
@@ -889,7 +1116,7 @@ function ProcessEditorInner() {
         )}
       </div>
 
-      {exportOpen && <ExportDialog open={exportOpen} onOpenChange={setExportOpen} />}
+      {exportOpen && <ExportDialog open={exportOpen} onOpenChange={setExportOpen} nodes={nodes} edges={edges} processName={processData?.name} />}
       {shareOpen && <ShareDialog open={shareOpen} onOpenChange={setShareOpen} processId={processId} />}
       {savePointOpen && <SavePointDialog open={savePointOpen} onOpenChange={setSavePointOpen} processId={processId} nodes={nodes} edges={edges} />}
       {swimlaneOpen && <SwimlanePanel processId={processId} nodes={nodes} onClose={() => setSwimlaneOpen(false)} />}

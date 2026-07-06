@@ -53,35 +53,22 @@ export function pickSide(from: Node, toward: Node): HandleSide {
   return dy >= 0 ? "bottom" : "top";
 }
 
-function isQuestion(n: Node): boolean {
-  return n.type === "question" || (n.data as any)?.nodeType === "question";
-}
-
 /**
  * Compute optimal source and target handle IDs so edges attach on the
  * sides of each node that face the other node.
  *
- * For Question source nodes we preserve any existing "yes"/"no" source handle
- * (that's semantic), and only recompute the target side.
- * If the source is a Question node without a prior yes/no assignment we
- * fall back to "yes" — callers should pass the current sourceHandle so
- * this logic stays stable across re-routes.
+ * All node types (including Question) now pick their source side
+ * geometrically — Yes/No is carried on the edge label by draw order, not by
+ * a fixed handle — so question branches re-route to face their target just
+ * like action steps do.
  */
 export function pickBestHandles(
   source: Node,
   target: Node,
-  opts: { currentSourceHandle?: string | null } = {}
+  _opts: { currentSourceHandle?: string | null } = {}
 ): { sourceHandle: string; targetHandle: string } {
-  let sourceHandle: string;
-  if (isQuestion(source)) {
-    const cur = opts.currentSourceHandle;
-    sourceHandle = cur === "yes" || cur === "no" ? cur : "yes";
-  } else {
-    const side = pickSide(source, target);
-    sourceHandle = `s-${side}`;
-  }
-  const targetSide = pickSide(target, source);
-  const targetHandle = `t-${targetSide}`;
+  const sourceHandle = `s-${pickSide(source, target)}`;
+  const targetHandle = `t-${pickSide(target, source)}`;
   return { sourceHandle, targetHandle };
 }
 

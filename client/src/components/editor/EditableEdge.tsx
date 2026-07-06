@@ -101,11 +101,28 @@ function EditableEdge({
   const labelColor = isYes ? "#16a34a" : isNo ? "#dc2626" : "#6b7280";
   const labelBg = isYes ? "#f0fdf4" : isNo ? "#fef2f2" : "#f9fafb";
 
+  const markerId = `livemap-arrow-${isYes ? "yes" : isNo ? "no" : "default"}${selected ? "-selected" : ""}`;
+  const markerColor = selected ? "#374151" : edgeColor;
+
   return (
     <>
+      <defs>
+        <marker
+          id={markerId}
+          viewBox="0 0 10 10"
+          refX="8"
+          refY="5"
+          markerWidth="6"
+          markerHeight="6"
+          orient="auto-start-reverse"
+        >
+          <path d="M 0 0 L 10 5 L 0 10 z" fill={markerColor} />
+        </marker>
+      </defs>
       <BaseEdge
         id={id}
         path={edgePath}
+        markerEnd={`url(#${markerId})`}
         style={{
           ...style,
           strokeWidth: selected ? 3 : 2,

@@ -38,6 +38,32 @@ function NodePalette() {
           <text x="28" y="24" textAnchor="middle" className="text-base font-semibold" fill="#1f2937">Q</text>
         </svg>
       </div>
+
+      <div className="h-px bg-gray-100 -mx-1" />
+
+      {/* Start terminator */}
+      <div
+        className="cursor-grab active:cursor-grabbing select-none"
+        draggable
+        onDragStart={(e) => onDragStart(e, "start")}
+        title="Drag to add Start node"
+      >
+        <div className="w-14 h-8 rounded-full flex items-center justify-center bg-green-500 hover:bg-green-600 transition-colors">
+          <span className="text-xs font-semibold text-white">Start</span>
+        </div>
+      </div>
+
+      {/* End terminator */}
+      <div
+        className="cursor-grab active:cursor-grabbing select-none"
+        draggable
+        onDragStart={(e) => onDragStart(e, "end")}
+        title="Drag to add End node"
+      >
+        <div className="w-14 h-8 rounded-full flex items-center justify-center bg-red-500 hover:bg-red-600 transition-colors">
+          <span className="text-xs font-semibold text-white">End</span>
+        </div>
+      </div>
     </div>
   );
 }

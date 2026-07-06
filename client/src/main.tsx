@@ -8,7 +8,19 @@ import App from "./App";
 import { getLoginUrl } from "./const";
 import "./index.css";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // The editor holds canvas state locally and autosaves per-edit. A
+      // background refetch that replaces process.get would clobber in-flight
+      // nodes and unsaved input the instant the window regains focus, so we
+      // don't refetch on focus/reconnect and treat fetched data as fresh.
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      staleTime: 30_000,
+    },
+  },
+});
 
 const redirectToLoginIfUnauthorized = (error: unknown) => {
   if (!(error instanceof TRPCClientError)) return;

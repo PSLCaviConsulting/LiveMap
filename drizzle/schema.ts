@@ -82,6 +82,7 @@ export const canvasObjects = sqliteTable("canvas_objects", {
   system: text("system"),
   role: text("role"),
   question: text("question"),
+  note: text("note"),
   color: text("color"),
   positionX: integer("positionX").default(0).notNull(),
   positionY: integer("positionY").default(0).notNull(),
