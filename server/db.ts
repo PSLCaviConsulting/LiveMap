@@ -8,14 +8,19 @@ import {
   savePoints, shareLinks
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
+import { SCHEMA_SQL } from './_core/schemaBootstrap';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
 function resolveSqlitePath(): string {
-  // DATABASE_URL can be: "sqlite:./data.db", "file:./data.db", or a raw path.
+  // DATABASE_URL can be "sqlite:./data.db", "file:./data.db", a URL with an
+  // authority ("sqlite:///abs/path"), or a raw path. Strip the scheme and an
+  // optional "//" authority but KEEP a leading "/" so an absolute path (e.g. a
+  // Railway volume at /data) survives: "sqlite:/data/x" and "sqlite:///data/x"
+  // both resolve to "/data/x", while "sqlite:./x" stays relative.
   const raw = process.env.DATABASE_URL?.trim();
   const rel = raw && raw.length > 0
-    ? raw.replace(/^sqlite:\/?\/?/, "").replace(/^file:\/?\/?/, "")
+    ? raw.replace(/^(?:sqlite|file):/i, "").replace(/^\/\//, "")
     : "./data/livemap.db";
   const abs = path.isAbsolute(rel) ? rel : path.resolve(process.cwd(), rel);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -28,6 +33,9 @@ export async function getDb() {
       const sqlite = new Database(resolveSqlitePath());
       sqlite.pragma("journal_mode = WAL");
       sqlite.pragma("foreign_keys = ON");
+      // Self-provision the schema on first boot so a fresh deployment (no
+      // migration step) has its tables. Idempotent — no-op if they exist.
+      sqlite.exec(SCHEMA_SQL);
       _db = drizzle(sqlite);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);

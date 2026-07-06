@@ -2,10 +2,11 @@ import "dotenv/config";
 import path from "node:path";
 import { defineConfig } from "drizzle-kit";
 
-// Accept sqlite:/, file:/, or raw path. Default to ./data/livemap.db.
+// Accept sqlite:/file: schemes (with optional // authority) or a raw path,
+// keeping absolute paths intact. Default to ./data/livemap.db.
 const raw = process.env.DATABASE_URL?.trim();
 const rel = raw && raw.length > 0
-  ? raw.replace(/^sqlite:\/?\/?/, "").replace(/^file:\/?\/?/, "")
+  ? raw.replace(/^(?:sqlite|file):/i, "").replace(/^\/\//, "")
   : "./data/livemap.db";
 const abs = path.isAbsolute(rel) ? rel : path.resolve(process.cwd(), rel);
 
